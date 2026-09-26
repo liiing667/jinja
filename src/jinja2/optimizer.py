@@ -17,9 +17,16 @@ if t.TYPE_CHECKING:
     from .environment import Environment
 
 
-def optimize(node: nodes.Node, environment: "Environment") -> nodes.Node:
+def optimize(node: nodes.Node, environment: "Environment | None" = None) -> nodes.Node:
     """The context hint can be used to perform an static optimization
-    based on the context given."""
+    based on the context given.
+
+    This is a self-contained pass over the node tree: it takes the tree
+    produced by the parser and returns a new tree with constant
+    expressions folded, so the trees before and after folding can be
+    inspected independently.  The environment is optional and only used
+    to evaluate filters, tests, and attribute access at compile time.
+    """
     optimizer = Optimizer(environment)
     return t.cast(nodes.Node, optimizer.visit(node))
 

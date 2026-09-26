@@ -8,6 +8,7 @@ import re
 import typing as t
 from ast import literal_eval
 from collections import deque
+from dataclasses import dataclass
 from sys import intern
 
 from ._identifier import pattern as name_re
@@ -21,7 +22,7 @@ if t.TYPE_CHECKING:
 
 # cache for the lexers. Exists in order to be able to have multiple
 # environments with the same lexer
-_lexer_cache: t.MutableMapping[tuple, "Lexer"] = LRUCache(50)  # type: ignore
+_lexer_cache: t.MutableMapping["LexerConfig", "Lexer"] = LRUCache(50)  # type: ignore
 
 # static regular expressions
 whitespace_re = re.compile(r"\s+")
@@ -210,41 +211,96 @@ def count_newlines(value: str) -> int:
     return len(newline_re.findall(value))
 
 
-def compile_rules(environment: "Environment") -> list[tuple[str, str]]:
-    """Compiles all the rules from the environment into a list of rules."""
+def normalize_newlines(source: str, sequence: str = "\n") -> str:
+    """Replace every newline sequence (``\\n``, ``\\r\\n`` and ``\\r``)
+    in the source with the given sequence.  This is the only newline
+    normalization the lexer layer performs on template data and strings.
+    """
+    return newline_re.sub(sequence, source)
+
+
+@dataclass(frozen=True, slots=True)
+class LexerConfig:
+    """Every setting the lexer layer needs, and nothing more.
+
+    The lexer only depends on this value object, never on a full
+    environment, so tokenization and newline normalization can be used
+    and tested on their own.  Use :meth:`from_environment` to derive a
+    config from an :class:`~jinja2.Environment`, or instantiate it
+    directly to lex without one.  The defaults mirror
+    :mod:`jinja2.defaults`; they are repeated here so that the lexer
+    layer does not depend on modules further up the stack.
+    """
+
+    block_start_string: str = "{%"
+    block_end_string: str = "%}"
+    variable_start_string: str = "{{"
+    variable_end_string: str = "}}"
+    comment_start_string: str = "{#"
+    comment_end_string: str = "#}"
+    line_statement_prefix: str | None = None
+    line_comment_prefix: str | None = None
+    trim_blocks: bool = False
+    lstrip_blocks: bool = False
+    newline_sequence: str = "\n"
+    keep_trailing_newline: bool = False
+
+    @classmethod
+    def from_environment(cls, environment: "Environment") -> "LexerConfig":
+        """Create a config from an environment or any object that
+        carries the same attributes.
+        """
+        return cls(
+            block_start_string=environment.block_start_string,
+            block_end_string=environment.block_end_string,
+            variable_start_string=environment.variable_start_string,
+            variable_end_string=environment.variable_end_string,
+            comment_start_string=environment.comment_start_string,
+            comment_end_string=environment.comment_end_string,
+            line_statement_prefix=environment.line_statement_prefix,
+            line_comment_prefix=environment.line_comment_prefix,
+            trim_blocks=environment.trim_blocks,
+            lstrip_blocks=environment.lstrip_blocks,
+            newline_sequence=environment.newline_sequence,
+            keep_trailing_newline=environment.keep_trailing_newline,
+        )
+
+
+def compile_rules(config: LexerConfig) -> list[tuple[str, str]]:
+    """Compiles the tag rules for a lexer config into a list of rules."""
     e = re.escape
     rules = [
         (
-            len(environment.comment_start_string),
+            len(config.comment_start_string),
             TOKEN_COMMENT_BEGIN,
-            e(environment.comment_start_string),
+            e(config.comment_start_string),
         ),
         (
-            len(environment.block_start_string),
+            len(config.block_start_string),
             TOKEN_BLOCK_BEGIN,
-            e(environment.block_start_string),
+            e(config.block_start_string),
         ),
         (
-            len(environment.variable_start_string),
+            len(config.variable_start_string),
             TOKEN_VARIABLE_BEGIN,
-            e(environment.variable_start_string),
+            e(config.variable_start_string),
         ),
     ]
 
-    if environment.line_statement_prefix is not None:
+    if config.line_statement_prefix is not None:
         rules.append(
             (
-                len(environment.line_statement_prefix),
+                len(config.line_statement_prefix),
                 TOKEN_LINESTATEMENT_BEGIN,
-                r"^[ \t\v]*" + e(environment.line_statement_prefix),
+                r"^[ \t\v]*" + e(config.line_statement_prefix),
             )
         )
-    if environment.line_comment_prefix is not None:
+    if config.line_comment_prefix is not None:
         rules.append(
             (
-                len(environment.line_comment_prefix),
+                len(config.line_comment_prefix),
                 TOKEN_LINECOMMENT_BEGIN,
-                r"(?:^|(?<=\S))[^\S\r\n]*" + e(environment.line_comment_prefix),
+                r"(?:^|(?<=\S))[^\S\r\n]*" + e(config.line_comment_prefix),
             )
         )
 
@@ -427,24 +483,11 @@ class TokenStream:
 
 def get_lexer(environment: "Environment") -> "Lexer":
     """Return a lexer which is probably cached."""
-    key = (
-        environment.block_start_string,
-        environment.block_end_string,
-        environment.variable_start_string,
-        environment.variable_end_string,
-        environment.comment_start_string,
-        environment.comment_end_string,
-        environment.line_statement_prefix,
-        environment.line_comment_prefix,
-        environment.trim_blocks,
-        environment.lstrip_blocks,
-        environment.newline_sequence,
-        environment.keep_trailing_newline,
-    )
-    lexer = _lexer_cache.get(key)
+    config = LexerConfig.from_environment(environment)
+    lexer = _lexer_cache.get(config)
 
     if lexer is None:
-        _lexer_cache[key] = lexer = Lexer(environment)
+        _lexer_cache[config] = lexer = Lexer(config)
 
     return lexer
 
@@ -472,11 +515,23 @@ class Lexer:
     """Class that implements a lexer for a given environment. Automatically
     created by the environment class, usually you don't have to do that.
 
+    The lexer can also be used without an environment by passing a
+    :class:`LexerConfig` instead, which makes the lexer layer usable and
+    testable on its own::
+
+        lexer = Lexer(LexerConfig(trim_blocks=True))
+        stream = lexer.tokenize("{% if x %}a{% endif %}")
+
     Note that the lexer is not automatically bound to an environment.
     Multiple environments can share the same lexer.
     """
 
-    def __init__(self, environment: "Environment") -> None:
+    def __init__(self, config: "LexerConfig | Environment") -> None:
+        if not isinstance(config, LexerConfig):
+            config = LexerConfig.from_environment(config)
+
+        self.config = config
+
         # shortcuts
         e = re.escape
 
@@ -499,20 +554,20 @@ class Lexer:
         # <%= for variables. (if someone wants asp like syntax)
         # variables are just part of the rules if variable processing
         # is required.
-        root_tag_rules = compile_rules(environment)
+        root_tag_rules = compile_rules(config)
 
-        block_start_re = e(environment.block_start_string)
-        block_end_re = e(environment.block_end_string)
-        comment_end_re = e(environment.comment_end_string)
-        variable_end_re = e(environment.variable_end_string)
+        block_start_re = e(config.block_start_string)
+        block_end_re = e(config.block_end_string)
+        comment_end_re = e(config.comment_end_string)
+        variable_end_re = e(config.variable_end_string)
 
         # block suffix if trimming is enabled
-        block_suffix_re = "\\n?" if environment.trim_blocks else ""
+        block_suffix_re = "\\n?" if config.trim_blocks else ""
 
-        self.lstrip_blocks = environment.lstrip_blocks
+        self.lstrip_blocks = config.lstrip_blocks
 
-        self.newline_sequence = environment.newline_sequence
-        self.keep_trailing_newline = environment.keep_trailing_newline
+        self.newline_sequence = config.newline_sequence
+        self.keep_trailing_newline = config.keep_trailing_newline
 
         root_raw_re = (
             rf"(?P<raw_begin>{block_start_re}(\-|\+|)\s*raw\s*"
@@ -599,7 +654,7 @@ class Lexer:
         """Replace all newlines with the configured sequence in strings
         and template data.
         """
-        return newline_re.sub(self.newline_sequence, value)
+        return normalize_newlines(value, self.newline_sequence)
 
     def tokenize(
         self,

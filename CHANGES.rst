@@ -13,6 +13,13 @@ Unreleased
 -   Use modern packaging metadata with ``pyproject.toml`` instead of ``setup.cfg``.
     :pr:`1793`
 -   Use ``flit_core`` instead of ``setuptools`` as build backend.
+-   Split the compile pipeline into independently usable layers. The lexer
+    only needs a new ``lexer.LexerConfig`` value object instead of a full
+    environment, newline normalization is available as
+    ``lexer.normalize_newlines``, the parser can parse directly from a
+    ``lexer.TokenStream`` without an environment, and
+    ``optimizer.optimize`` works without an environment. Rendering output
+    and the bytecode cache format are unchanged.
 
 
 Version 3.1.6
