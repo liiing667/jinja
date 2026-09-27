@@ -8,6 +8,7 @@ from .exceptions import TemplateAssertionError
 from .exceptions import TemplateSyntaxError
 from .lexer import describe_token
 from .lexer import describe_token_expr
+from .lexer import TokenStream
 
 if t.TYPE_CHECKING:
     import typing_extensions as te
@@ -52,23 +53,38 @@ class Parser:
 
     def __init__(
         self,
-        environment: "Environment",
-        source: str,
+        environment: "Environment | None",
+        source: "str | TokenStream",
         name: str | None = None,
         filename: str | None = None,
         state: str | None = None,
     ) -> None:
         self.environment = environment
-        self.stream = environment._tokenize(source, name, filename, state)
+
+        if isinstance(source, TokenStream):
+            # The syntax layer can also start from an already tokenized
+            # stream, in which case no environment is needed at all.
+            self.stream = source
+        elif environment is not None:
+            self.stream = environment._tokenize(source, name, filename, state)
+        else:
+            raise TypeError(
+                "Parsing from source text requires an environment; pass a"
+                " TokenStream to parse without one."
+            )
+
         self.name = name
         self.filename = filename
         self.closed = False
         self.extensions: dict[
             str, t.Callable[[Parser], nodes.Node | list[nodes.Node]]
         ] = {}
-        for extension in environment.iter_extensions():
-            for tag in extension.tags:
-                self.extensions[tag] = extension.parse
+
+        if environment is not None:
+            for extension in environment.iter_extensions():
+                for tag in extension.tags:
+                    self.extensions[tag] = extension.parse
+
         self._last_identifier = 0
         self._tag_stack: list[str] = []
         self._end_token_stack: list[tuple[str, ...]] = []
@@ -1037,5 +1053,8 @@ class Parser:
     def parse(self) -> nodes.Template:
         """Parse the whole template into a `Template` node."""
         result = nodes.Template(self.subparse(), lineno=1)
-        result.set_environment(self.environment)
+
+        if self.environment is not None:
+            result.set_environment(self.environment)
+
         return result
