@@ -1,3 +1,5 @@
+import functools
+
 import pytest
 from markupsafe import escape
 
@@ -54,6 +56,76 @@ class TestSandbox:
             env.from_string("{{ foo.__class__.__subclasses__() }}").render,
             foo=42,
         )
+
+    def test_unsafe_partial(self):
+        env = SandboxedEnvironment()
+
+        @unsafe
+        def delete_user(user):
+            return user
+
+        t = env.from_string("{{ f(1) }}")
+        pytest.raises(SecurityError, t.render, f=functools.partial(delete_user))
+        pytest.raises(
+            SecurityError,
+            t.render,
+            f=functools.partial(functools.partial(delete_user)),
+        )
+
+        def add(a, b, c):
+            return a + b + c
+
+        assert t.render(f=functools.partial(add, 2, 3)) == "6"
+
+    def test_unsafe_partialmethod(self):
+        env = SandboxedEnvironment()
+
+        class User:
+            @unsafe
+            def delete(self):
+                return "deleted"
+
+            delete_later = functools.partialmethod(delete)
+
+        user = User()
+        assert not env.is_safe_callable(User.__dict__["delete_later"])
+        pytest.raises(
+            SecurityError, env.from_string("{{ f() }}").render, f=user.delete_later
+        )
+
+    def test_unsafe_bound_method(self):
+        env = SandboxedEnvironment()
+
+        class User:
+            @unsafe
+            def delete(self):
+                return "deleted"
+
+            def save(self):
+                return "saved"
+
+        User.save.alters_data = True
+        user = User()
+        pytest.raises(SecurityError, env.from_string("{{ f() }}").render, f=user.delete)
+        pytest.raises(SecurityError, env.from_string("{{ f() }}").render, f=user.save)
+
+    def test_unsafe_callable_instance(self):
+        env = SandboxedEnvironment()
+
+        class Callable:
+            def __call__(self):
+                return "called"
+
+        Callable.__call__.unsafe_callable = True
+        assert not env.is_safe_callable(Callable())
+        pytest.raises(SecurityError, env.from_string("{{ f() }}").render, f=Callable())
+
+        class SafeCallable:
+            def __call__(self):
+                return "called"
+
+        assert env.is_safe_callable(SafeCallable())
+        assert env.from_string("{{ f() }}").render(f=SafeCallable()) == "called"
 
     def test_immutable_environment(self, env):
         env = ImmutableSandboxedEnvironment()

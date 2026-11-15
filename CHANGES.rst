@@ -13,6 +13,10 @@ Unreleased
 -   Use modern packaging metadata with ``pyproject.toml`` instead of ``setup.cfg``.
     :pr:`1793`
 -   Use ``flit_core`` instead of ``setuptools`` as build backend.
+-   The sandbox's ``is_safe_callable`` unwraps ``functools.partial`` and
+    ``functools.partialmethod``, bound methods, and a type's ``__call__``
+    recursively, so ``unsafe_callable`` and ``alters_data`` markers placed on
+    the wrapped callable are no longer hidden from the sandbox.
 
 
 Version 3.1.6

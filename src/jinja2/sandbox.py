@@ -8,6 +8,8 @@ import typing as t
 from _string import formatter_field_name_split  # type: ignore
 from collections import abc
 from collections import deque
+from functools import partial
+from functools import partialmethod
 from functools import update_wrapper
 from string import Formatter
 
@@ -260,10 +262,38 @@ class SandboxedEnvironment(Environment):
 
         This also recognizes the Django convention of setting
         ``func.alters_data = True``.
+
+        Wrappers such as :func:`functools.partial` and
+        :class:`functools.partialmethod` hide the attributes of the wrapped
+        callable, and an instance only exposes the attributes of its type's
+        ``__call__`` indirectly. Unwrap those recursively so a marker placed on
+        the underlying callable is still recognized.
         """
-        return not (
-            getattr(obj, "unsafe_callable", False) or getattr(obj, "alters_data", False)
-        )
+        seen: set[int] = set()
+
+        while obj is not None and id(obj) not in seen:
+            seen.add(id(obj))
+
+            if getattr(obj, "unsafe_callable", False) or getattr(
+                obj, "alters_data", False
+            ):
+                return False
+
+            if isinstance(obj, (partial, partialmethod)):
+                obj = obj.func
+            elif isinstance(obj, types.MethodType):
+                obj = obj.__func__
+            elif isinstance(obj, (types.FunctionType, types.BuiltinFunctionType)):
+                # A plain function carries its own markers, already checked.
+                return True
+            elif callable(obj):
+                # An instance's ``__call__`` (or a class itself) may carry the
+                # marker on the type rather than the instance.
+                obj = type(obj).__call__
+            else:
+                break
+
+        return True
 
     def call_binop(
         self, context: Context, operator: str, left: t.Any, right: t.Any
